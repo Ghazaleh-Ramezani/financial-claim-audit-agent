@@ -1,0 +1,21 @@
+{
+  "accession": "SYN-BAD-NEG",
+  "company": {
+    "ticker": "ACME",
+    "name": "Acme Analytics Inc."
+  },
+  "form_type": "10-Q",
+  "filed_at": "2026-05-08",
+  "amends": null,
+  "narrative": "Acme Analytics Inc. quarterly report, first quarter 2026. Synthetic document for testing.",
+  "facts": [
+    {
+      "metric": "revenue",
+      "fiscal_period": "Q1-2026",
+      "period_end": "2026-03-31",
+      "value": "-5",
+      "unit": "USD_millions",
+      "source_span": "Revenue for the quarter was $31.2 million."
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "accession": "SYN-ACME-26-000187",
+  "company": {
+    "ticker": "ACME",
+    "name": "Acme Analytics Inc."
+  },
+  "form_type": "10-K/A",
+  "filed_at": "2026-05-10",
+  "amends": "SYN-ACME-26-000101",
+  "narrative": "Amendment No. 1. Revenue and net income for fiscal 2025 are restated to correct the timing of recognition for multi-year licence contracts. Synthetic document for testing.",
+  "facts": [
+    {
+      "metric": "revenue",
+      "fiscal_period": "FY2025",
+      "period_end": "2025-12-31",
+      "value": "115.0",
+      "unit": "USD_millions",
+      "source_span": "As restated, total revenue for fiscal 2025 was $115.0 million."
+    },
+    {
+      "metric": "net_income",
+      "fiscal_period": "FY2025",
+      "period_end": "2025-12-31",
+      "value": "15.9",
+      "unit": "USD_millions",
+      "source_span": "As restated, net income was $15.9 million."
+    },
+    {
+      "metric": "operating_income",
+      "fiscal_period": "FY2025",
+      "period_end": "2025-12-31",
+      "value": "25.0",
+      "unit": "USD_millions",
+      "source_span": "Operating income was $25.0 million (unchanged)."
+    }
+  ]
+}

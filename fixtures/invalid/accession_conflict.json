@@ -1,0 +1,37 @@
+{
+  "accession": "SYN-ACME-26-000101",
+  "company": {
+    "ticker": "ACME",
+    "name": "Acme Analytics Inc."
+  },
+  "form_type": "10-K",
+  "filed_at": "2026-02-15",
+  "amends": null,
+  "narrative": "Acme Analytics Inc. annual report for fiscal year 2025. Synthetic document for testing.",
+  "facts": [
+    {
+      "metric": "revenue",
+      "fiscal_period": "FY2025",
+      "period_end": "2025-12-31",
+      "value": "130.0",
+      "unit": "USD_millions",
+      "source_span": "Total revenue for fiscal 2025 was $120.0 million."
+    },
+    {
+      "metric": "net_income",
+      "fiscal_period": "FY2025",
+      "period_end": "2025-12-31",
+      "value": "18.4",
+      "unit": "USD_millions",
+      "source_span": "Net income was $18.4 million."
+    },
+    {
+      "metric": "operating_income",
+      "fiscal_period": "FY2025",
+      "period_end": "2025-12-31",
+      "value": "25.0",
+      "unit": "USD_millions",
+      "source_span": "Operating income was $25.0 million."
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "accession": "SYN-GLBX-26-000044",
+  "company": {
+    "ticker": "GLBX",
+    "name": "Globex Logistics Corp."
+  },
+  "form_type": "10-K",
+  "filed_at": "2026-03-02",
+  "amends": null,
+  "narrative": "Globex Logistics Corp. annual report. Amounts in thousands. Synthetic document for testing.",
+  "facts": [
+    {
+      "metric": "revenue",
+      "fiscal_period": "FY2025",
+      "period_end": "2025-12-31",
+      "value": "482350",
+      "unit": "USD_thousands",
+      "source_span": "Revenues (in thousands): 482,350"
+    },
+    {
+      "metric": "net_income",
+      "fiscal_period": "FY2025",
+      "period_end": "2025-12-31",
+      "value": "-12100",
+      "unit": "USD_thousands",
+      "source_span": "Net loss (in thousands): (12,100)"
+    }
+  ]
+}

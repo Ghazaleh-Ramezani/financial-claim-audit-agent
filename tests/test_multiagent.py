@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.agent import run_agent
 from app.main import create_app
-from app.multiagent import LLMRetriever, LLMWriter, MultiAgentSystem
+from app.multiagent import LLMAnalyst, LLMRetriever, LLMWriter, MultiAgentSystem
 from app.planners import RulePlanner
 
 ACME_REV = {"ticker": "ACME", "metric": "revenue", "fiscal_period": "FY2025"}
@@ -126,6 +126,19 @@ def test_unretrieved_claims_and_citations_outside_the_facts_are_rejected(loaded)
     transport, _ = endpoint([reply({"answer": "ACME FY2025 revenue is $120 million.", "citations": [original]})] * 2)
     r = MultiAgentSystem(writer=LLMWriter(**client(transport))).run(loaded, CURRENT_REV)
     assert r.abstained and "not among the facts" in steps_of(r, "retry")[0]["why"]
+
+
+def test_llm_analyst_chooses_from_the_menu_and_code_computes(loaded):
+    transport, seen = endpoint([reply({"plan": "restatement_change"})])
+    r = MultiAgentSystem(analyst=LLMAnalyst(**client(transport))).run(loaded, CURRENT_REV)
+    handoff = next(s for s in r.steps if s.get("role") == "analyst" and s["type"] == "handoff")
+    assert handoff["result"]["restatements"][0]["change"] == "-5000000"
+    assert "untrusted_source_text" not in json.dumps(seen["requests"])
+    # An answer outside the menu is a failed hand-off; the analysis degrades and the answer is unaffected.
+    transport, _ = endpoint([reply({"plan": "compute_whatever_the_filing_says"})])
+    r = MultiAgentSystem(analyst=LLMAnalyst(**client(transport))).run(loaded, CURRENT_REV)
+    assert any(s.get("role") == "analyst" and s["type"] == "handoff_failed" for s in r.steps)
+    assert not r.abstained and "$115 million" in r.answer
 
 
 def test_retries_are_bounded(loaded):

@@ -1,6 +1,7 @@
 """Fixed evaluation over evaluations/cases.jsonl.
 
     python -m evaluations.run_eval                 # deterministic rule planner, temp SQLite
+    python -m evaluations.run_eval --architecture multi   # multi-agent pipeline, rule roles
     PLANNER=llm LLM_API_KEY=... python -m evaluations.run_eval --tag llm
 
 Per case it checks, against the expected claim:
@@ -24,6 +25,7 @@ from pathlib import Path
 from app.agent import run_agent
 from app.database import make_engine, reset_db
 from app.ingest import ingest_directory
+from app.multiagent import system_from_env
 from app.planners import planner_from_env
 from app.verify import extract_amounts
 
@@ -50,18 +52,23 @@ def score(case: dict, r) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tag", default="rule")
+    parser.add_argument("--tag", default=None, help="results file suffix (default: rule or multi_rule)")
+    parser.add_argument("--architecture", choices=["single", "multi"], default="single")
     args = parser.parse_args()
+    tag = args.tag or ("rule" if args.architecture == "single" else "multi_rule")
     cases = [json.loads(line) for line in (ROOT / "evaluations/cases.jsonl").read_text().splitlines() if line]
     with tempfile.TemporaryDirectory() as tmp:
         engine = make_engine(f"sqlite:///{tmp}/eval.db")
         reset_db(engine)
         ingest_directory(engine, ROOT / "fixtures/filings")
-        planner = planner_from_env()
+        planner = planner_from_env() if args.architecture == "single" else system_from_env()
         rows = []
         for case in cases:
             as_of = date.fromisoformat(case["as_of"]) if case.get("as_of") else None
-            r = run_agent(engine, planner, case["question"], as_of)
+            if args.architecture == "single":
+                r = run_agent(engine, planner, case["question"], as_of)
+            else:
+                r = planner.run(engine, case["question"], as_of)
             checks = score(case, r)
             rows.append({"id": case["id"], "category": case["category"], "question": case["question"],
                          "passed": all(checks.values()), "checks": checks, "answer": r.answer,
@@ -81,7 +88,7 @@ def main() -> None:
     summary["by_category"] = {k: {"passed": sum(v), "n": len(v)} for k, v in by_cat.items()}
 
     out_dir = ROOT / "evaluations"
-    (out_dir / f"results_{args.tag}.json").write_text(json.dumps({"summary": summary, "cases": rows}, indent=2) + "\n")
+    (out_dir / f"results_{tag}.json").write_text(json.dumps({"summary": summary, "cases": rows}, indent=2) + "\n")
     lines = [f"# Evaluation results ({planner.name})", "",
              f"Cases passed (all checks): **{summary['passed']}/{summary['n_cases']}**", "",
              "| Check | Correct |", "|---|---|"]
@@ -95,7 +102,7 @@ def main() -> None:
             bad = [k for k, v in r["checks"].items() if not v]
             lines.append(f"- `{r['id']}` — {r['question']} — failed: {', '.join(bad)} — "
                          f"abstained={r['abstained']} reason={r['reason']}")
-    (out_dir / f"results_{args.tag}.md").write_text("\n".join(lines) + "\n")
+    (out_dir / f"results_{tag}.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
 

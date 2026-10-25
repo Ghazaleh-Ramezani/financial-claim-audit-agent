@@ -152,7 +152,7 @@ pytest -q                                                                  # SQL
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/claims pytest -q   # PostgreSQL
 ```
 
-86 tests plus one strict `xfail`: ingestion validation, idempotency, restatement
+87 tests plus one strict `xfail`: ingestion validation, idempotency, restatement
 history, as-of boundaries (day before / day of each filing), agent tool use,
 safety, the verification gate, rendered answers, the red-team invariants, the
 multi-agent contracts, failure routing and evaluation invariants, the alert rules

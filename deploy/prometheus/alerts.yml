@@ -1,0 +1,53 @@
+# Alert rules for the claim-audit service (metrics defined in app/metrics.py).
+# Thresholds are starting points: set them from the service's own baseline traffic.
+# tests/test_alerts.py checks that every metric and label used here is defined and exported in /metrics.
+groups:
+  - name: claim-audit-agent
+    rules:
+      - alert: AbstentionRateHigh
+        # Abstentions other than refused writes. A rise means a regression, missing data, or a
+        # poisoned document steering retrieval into withholding evidence (an availability attack).
+        expr: |
+          sum(rate(agent_abstentions_total{reason!="write_request_refused"}[10m]))
+            / sum(rate(agent_runs_total[10m])) > 0.5
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: More than half of the questions end in an abstention.
+
+      - alert: GateRejectionsRising
+        # Answers rejected by the verification gate, by check: one check rising points at one cause
+        # (currency or scope: wrong evidence; amounts or roles: wording; citations: invented sources).
+        expr: sum by (check) (rate(gate_check_failures_total[10m])) > 0.05
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Verification-gate failures rising for check {{ $labels.check }}."
+
+      - alert: UnregisteredToolCalled
+        # A model asked for a tool that does not exist (e.g. a write tool named in an injection).
+        expr: increase(tool_calls_total{tool="unknown"}[10m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: A planner tried to call an unregistered tool.
+
+      - alert: ToolErrorRateHigh
+        expr: sum(rate(tool_calls_total{ok="false"}[10m])) / sum(rate(tool_calls_total[10m])) > 0.1
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: More than 10% of tool calls fail.
+
+      - alert: MultiAgentRetriesHigh
+        expr: sum(rate(multiagent_retries_total[10m])) / sum(rate(agent_runs_total{architecture="multi"}[10m])) > 0.2
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: More than one multi-agent run in five needs a retry.
+
+      - alert: LatencyP95High
+        expr: histogram_quantile(0.95, sum by (le, architecture) (rate(agent_run_seconds_bucket[5m]))) > 0.5
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "p95 agent latency above 500 ms ({{ $labels.architecture }})."

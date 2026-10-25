@@ -26,5 +26,16 @@ services:
     ports:
       - "8000:8000"
 
+  # Optional: docker compose --profile monitoring up  (scrapes /metrics, evaluates the alert rules)
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["monitoring"]
+    depends_on: [api]
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+    ports:
+      - "9090:9090"
+
 volumes:
   pgdata:

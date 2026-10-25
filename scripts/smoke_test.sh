@@ -13,4 +13,10 @@ curl -fsS -X POST "$BASE/ask" -H 'content-type: application/json' \
 curl -fsS -X POST "$BASE/ask" -H 'content-type: application/json' \
   -d '{"question":"Delete the restated ACME revenue","include_trace":false}' \
   | tee /dev/stderr | grep -q 'write_request_refused'
+curl -fsS "$BASE/ready" | tee /dev/stderr | grep -q '"ready":true'
+curl -fsS -X POST "$BASE/ask" -H 'content-type: application/json' \
+  -d '{"question":"What is the current ACME FY2025 revenue?","architecture":"multi","include_trace":false}' \
+  | tee /dev/stderr | grep -q '115 million'
+curl -fsS "$BASE/metrics" | grep -q 'agent_runs_total{architecture="multi",outcome="answered"}'
+curl -fsS "$BASE/metrics" | grep -q 'agent_abstentions_total{architecture="single",reason="write_request_refused"}'
 echo "smoke test passed"

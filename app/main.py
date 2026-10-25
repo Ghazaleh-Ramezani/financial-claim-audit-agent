@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -24,6 +24,8 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=1000)
     as_of: date | None = Field(default=None, description="Exclude filings published after this date")
     include_trace: bool = True
+    answer_mode: Literal["model", "rendered"] = Field(
+        default="model", description="rendered: the answer text is written from the cited claim, not by the model")
 
 
 def create_app(engine=None, planner=None) -> FastAPI:
@@ -47,7 +49,8 @@ def create_app(engine=None, planner=None) -> FastAPI:
 
     @app.post("/ask")
     def ask(req: AskRequest) -> dict[str, Any]:
-        result = run_agent(app.state.engine, app.state.planner, req.question, req.as_of)
+        result = run_agent(app.state.engine, app.state.planner, req.question, req.as_of,
+                           answer_mode=req.answer_mode)
         return result.to_dict(include_trace=req.include_trace)
 
     @app.get("/companies")

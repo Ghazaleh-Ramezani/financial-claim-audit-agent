@@ -7,7 +7,9 @@ someone asks what was known **as of** a given date.
 
 > Scope: a research-to-application prototype on **synthetic filings**, engineered
 > like a service: tests on SQLite and PostgreSQL, CI, Docker Compose, structured
-> traces, and a red-team evaluation of the agent (see *Red-team evaluation*).
+> traces, Prometheus metrics and alert rules, a load test, a red-team evaluation
+> of the agent, and a multi-agent variant (LangGraph) compared against the single
+> agent on accuracy, containment of injected instructions, and fault recovery.
 
 Example (synthetic data): ACME's 10-K (filed 2026-02-15) reports FY2025 revenue of
 $120.0M; a 10-K/A (filed 2026-05-10) restates it to $115.0M. The system answers:
@@ -37,8 +39,13 @@ Verification gate (app/verify.py)          citations ⊆ ledger · amounts match
         │                                  · latest version cited · amount roles · question scope
         │  answer_mode=rendered: the answer text is written from the cited claim, not by the model
         ▼
-FastAPI (app/main.py)                      /ask · /claims/... · /restatements · /health   (no write routes)
+FastAPI (app/main.py)                      /ask · /claims/... · /restatements      (no write routes)
+                                           /health · /ready · /metrics · X-Request-ID · JSON access logs
 ```
+
+`/ask` runs either this single agent (`"architecture": "single"`, the default) or
+a four-role pipeline built on the same tools and gate (`"architecture": "multi"`,
+see *Multi-agent pipeline*).
 
 ### Data model
 
@@ -105,7 +112,7 @@ uvicorn app.main:app --reload
 
 # Docker Compose, PostgreSQL 16
 docker compose up --build
-./scripts/smoke_test.sh http://localhost:8000
+sh scripts/smoke_test.sh http://localhost:8000
 ```
 
 ```bash
@@ -124,6 +131,19 @@ tool calls with arguments, results and latency. Each run is also logged as one
 JSON line.
 
 LLM planner (any OpenAI-compatible endpoint): `PLANNER=llm LLM_BASE_URL=... LLM_MODEL=... LLM_API_KEY=...`.
+LLM roles in the multi-agent pipeline use the same variables with `MULTIAGENT_BACKEND=llm`.
+
+```bash
+curl -s localhost:8000/ask -H 'content-type: application/json' \
+  -d '{"question": "What is the current ACME FY2025 revenue?", "architecture": "multi"}'
+curl -s localhost:8000/ready
+curl -s localhost:8000/metrics | grep agent_runs_total
+
+python -m evaluations.run_eval --architecture multi      # 30 cases through the multi-agent pipeline
+python -m evaluations.multi_agent                        # single vs multi: accuracy, containment, recovery
+python scripts/load_test.py --base-url http://127.0.0.1:8000 --requests 2000 --concurrency 1 4 16
+docker compose --profile monitoring up --build           # adds Prometheus with the alert rules
+```
 
 ## Tests
 
@@ -132,14 +152,15 @@ pytest -q                                                                  # SQL
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/claims pytest -q   # PostgreSQL
 ```
 
-69 tests plus one strict `xfail`: ingestion validation, idempotency, restatement
+86 tests plus one strict `xfail`: ingestion validation, idempotency, restatement
 history, as-of boundaries (day before / day of each filing), agent tool use,
-safety, the verification gate, rendered answers, the red-team invariants, and the
-API. The strict `xfail` records the one attack that free-text verification does
-not stop (below); it turns into a failure if that ever changes. CI
-(`.github/workflows/tests.yml`) runs the suite on SQLite and on PostgreSQL 16,
-runs the evaluation, then builds the Docker Compose stack and runs the
-end-to-end smoke test against it.
+safety, the verification gate, rendered answers, the red-team invariants, the
+multi-agent contracts, failure routing and evaluation invariants, the alert rules
+against the service's own metrics, and the API. The strict `xfail` records the one
+attack that free-text verification does not stop (below); it turns into a failure
+if that ever changes. CI (`.github/workflows/tests.yml`) runs the suite on SQLite
+and on PostgreSQL 16, runs the evaluation, then builds the Docker Compose stack
+and runs the end-to-end smoke test against it.
 
 ## Evaluation
 
@@ -249,6 +270,134 @@ often a real model follows an injection. Next: the same suite with hosted models
 as the planner, measuring how often they follow the injection and the end-to-end
 attack success rate.
 
+## Multi-agent pipeline
+
+`app/multiagent.py` splits the agent into four roles, orchestrated as a LangGraph
+`StateGraph`. The reason for the split is a **trust boundary**: filing text is
+untrusted, and only one role reads it.
+
+```
+question ─▶ retriever ───────▶ analyst ──────────▶ writer ─────────▶ verifier ─▶ answer
+            tools; reads        picks a computation  writes from       six-check     or a fixed
+            filing text         from a fixed menu;   typed facts only  gate          abstention text
+            → claim ids +       code computes it     (no filing text)
+              intent only
+               ▲                                       ▲                  │
+               └──── citations · as-of · currency · scope fail ──────────┤
+                                                       └── amounts · roles fail ──┘   (bounded retries)
+```
+
+* **Typed hand-offs.** Each role's output is a Pydantic model with
+  `extra="forbid"`: the retriever returns claim ids (at most 8) and an intent, or
+  an abstention with a reason *code*; the analyst returns one of `none`,
+  `restatement_change`, `version_count`; the writer returns an answer and
+  citations. Anything else is a failed hand-off.
+* **Facts, not documents.** The analyst and writer receive claims rebuilt by code
+  from the store through a field whitelist, so `untrusted_source_text` never
+  reaches them. The per-run trace records how many characters of filing text each
+  role received.
+* **Failure routing.** A verification failure goes back to the role that can fix
+  it: evidence checks to the retriever, wording checks to the writer, each with
+  its own retry budget, together with the verifier's reason. When the budget is
+  spent the system abstains with fixed text, so nothing a role wrote reaches the
+  user on the failure path.
+* **Backends.** Every role has a deterministic backend and an OpenAI-compatible
+  LLM backend; the LLM roles are tested against scripted endpoints.
+
+### Evaluation: single agent vs multi-agent
+
+`python -m evaluations.multi_agent` (results in `evaluations/results_multi_agent.md`
+and `.json`). Every model role runs either the deterministic backend or a
+**worst-case policy that does whatever an instruction in its input says**; the
+same policy is used for every role and both architectures, so the comparison
+isolates what each role can see.
+
+Clean questions: 29/30 for both (`results_multi_rule.md`), the same answer/abstain
+decision on 30/30, identical text on all 20 answered cases. Cost: 4.07 model calls
+per question instead of 2.73, and 2.6 ms instead of 0.9 ms of orchestration (p50,
+deterministic roles).
+
+Containment of instructions planted in filings (16 attacks: amount override, stale
+version, entity switch, write tool, output injection of a URL, denial):
+
+| Configuration | Contained | Integrity breach | Availability loss |
+|---|---|---|---|
+| Single agent, model answers, full gate | 3 | **3** | 10 |
+| Single agent, rendered answers, full gate | 10 | 0 | 6 |
+| Multi-agent, full gate | 3 | **0** | 13 |
+| Multi-agent, no gate | 3 | 4 | 9 |
+| Single agent, text-blind tools, full gate | 16 | 0 | 0 |
+| Multi-agent, text-blind retriever, full gate | 16 | 0 | 0 |
+
+*Integrity breach*: a wrong or attacker-written answer is released. *Availability
+loss*: the system abstains on a question it should answer.
+
+Recovery from injected role failures (malformed output, a superseded or invented
+claim id, an altered figure, a citation outside the facts; 30 cases × 20 seeds):
+with a 10% fault rate per role call, 87.8% correct for the single agent, 98.0%
+when it reruns once on rejection, 98.7% for the multi-agent pipeline with one
+retry and 99.8% with two. At 30%: 81.3% for the rerun, 86.5% and 95.3% with one
+and two retries, for 4.8 and 5.2 model calls per question instead of 3.9. **No
+configuration released a wrong answer.**
+
+**What the numbers say**
+
+1. The split stops injected text from reaching released answers: the three
+   integrity breaches of the single agent are the URL injection, which the gate
+   cannot see because it contains no figure; in the pipeline the writer never sees
+   it. The gate still matters: without it the pipeline releases 4 wrong answers.
+2. The split does not make a poisoned retriever harmless. A retriever that follows
+   an injection tries to pass text through its contract (rejected by the schema),
+   selects the wrong evidence (rejected by the gate), or abstains when told to:
+   integrity holds, availability pays (13/16). The production counterpart is an
+   alert on the abstention rate.
+3. The control that contains all 16 attacks in either architecture is **least
+   privilege on information**: tools that return claims without the filing text.
+   The architecture matters when some model has to read documents.
+4. Routing a failure to the role that caused it recovers more answers than
+   rerunning the whole agent, at the price of more model calls.
+
+Limits: the roles are deterministic and the injection-following policy is a
+worst case, so these numbers measure the system around the models, not how often
+a real model follows an injection. Next: the same evaluation with hosted models in
+each role.
+
+## Operations
+
+* **Probes.** `/health` (liveness: the database answers) and `/ready` (readiness:
+  503 until the database is reachable and the claim store is loaded).
+* **Request correlation.** Every response carries `X-Request-ID` (the caller's,
+  if it matches `[A-Za-z0-9_-]{1,64}`, otherwise generated); `/ask` also returns
+  `X-Trace-ID`, the id of the agent trace. Each request is logged as one JSON line
+  with request id, path, status and latency.
+* **Metrics** (`/metrics`, `app/metrics.py`): runs by architecture and outcome,
+  abstentions by reason, verification-gate failures by check, tool calls by tool
+  and result, multi-agent retries by role, latency histogram. Label values are
+  bounded: a tool name a model invents is counted as `unknown`, so it cannot
+  create new series.
+* **Alerts** (`deploy/prometheus/alerts.yml`): abstention rate, gate failures by
+  check, unregistered tool called (pages), tool error rate, multi-agent retry
+  rate, p95 latency. `tests/test_alerts.py` checks that every metric and label the
+  rules use is defined and exported by the service. `docker compose --profile
+  monitoring up` adds Prometheus with this configuration.
+
+**Load test** (`scripts/load_test.py`, results in `evaluations/results_load.md`):
+2,000 requests per concurrency level cycling through the 30 evaluation questions,
+one uvicorn worker, PostgreSQL 16, server and load generator on one 2-core machine:
+
+| Architecture | Concurrency | Throughput (req/s) | p50 (ms) | p95 (ms) | Non-2xx |
+|---|---|---|---|---|---|
+| single | 1 | 250 | 4.0 | 5.1 | 0 |
+| single | 16 | 351 | 41.8 | 81.3 | 0 |
+| multi | 1 | 179 | 6.0 | 7.0 | 0 |
+| multi | 16 | 185 | 84.1 | 138.5 | 0 |
+
+The server's own counters match the request mix exactly (4,008 answered, 801 no
+evidence, 795 out of scope, 396 refused writes per 6,000 requests), which checks
+the metrics as well as the service. With one worker, throughput levels off after
+a few concurrent requests (single agent: 250, 312, 351 req/s at 1, 4, 16) while
+latency grows with queueing, so the service scales by replicas, one worker each.
+
 ## Status
 
 | Item | Status |
@@ -259,10 +408,13 @@ attack success rate.
 | Tool-using agent with trace (deterministic planner) | Implemented, tested, evaluated |
 | LLM planner (OpenAI-compatible function calling) | Implemented; tested and red-teamed against scripted endpoints |
 | Safety controls, six-check verification gate, rendered answers | Implemented, tested, red-teamed (`evaluations/red_team.py`) |
+| Multi-agent pipeline (LangGraph, typed hand-offs, failure routing) | Implemented, tested, evaluated against the single agent (`evaluations/multi_agent.py`) |
 | FastAPI + Docker Compose | Implemented; compose stack verified in CI |
+| Probes, request ids, Prometheus metrics | Implemented, tested; load-tested on PostgreSQL 16 |
+| Alert rules | Configured; checked by tests against the service's metrics |
 | CI (GitHub Actions) | Configured |
-| AWS App Runner deployment | Documented — steps in `deploy/aws-app-runner.md` |
+| AWS App Runner deployment | Documented in `deploy/aws-app-runner.md`; the image it uses is built and smoke-tested in CI |
 
 Next steps: SEC/XBRL ingestion in place of the synthetic JSON fixtures, PDF
 parsing, intraday timestamps for as-of, authentication and rate limiting, and the
-red-team and evaluation suites with hosted models as the planner.
+red-team, evaluation and multi-agent suites with hosted models in the model roles.

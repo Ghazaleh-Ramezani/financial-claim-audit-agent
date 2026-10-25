@@ -118,6 +118,7 @@ class Verification:
     passed: bool
     failures: list[str] = field(default_factory=list)
     checked_amounts: list[str] = field(default_factory=list)
+    checks_failed: list[str] = field(default_factory=list)  # names from CHECKS, in order
 
 
 def claim_key(claim: dict[str, Any]) -> tuple[str, str, str]:
@@ -138,29 +139,36 @@ def verify_answer(
     for the current or as-of figure, and leave it None for original/history questions.
     ``scope`` restricts the cited claims to the entities the question names."""
     failures: list[str] = []
+    failed: list[str] = []
+
+    def fail(check: str, message: str) -> None:
+        failures.append(message)
+        if check not in failed:
+            failed.append(check)
+
     cited = [evidence[c] for c in citations if c in evidence]
     if "citations" in checks:
         if not citations:
-            failures.append("no citations")
+            fail("citations", "no citations")
         unknown = [c for c in citations if c not in evidence]
         if unknown:
-            failures.append(f"cited claim ids not returned by any tool: {unknown}")
+            fail("citations", f"cited claim ids not returned by any tool: {unknown}")
     amounts = extract_amounts(answer)
     if "amounts" in checks:
         allowed = _allowed_values(cited)
         for amt in amounts:
             if not any(abs(abs(amt.value) - v) <= amt.tolerance for v in allowed):
-                failures.append(f"amount {amt.text!r} does not match any cited claim")
+                fail("amounts", f"amount {amt.text!r} does not match any cited claim")
     if "as_of" in checks and as_of is not None:
         late = [c["claim_id"] for c in cited if date.fromisoformat(c["filed_at"]) > as_of]
         if late:
-            failures.append(f"cited claims published after as_of {as_of}: {late}")
+            fail("as_of", f"cited claims published after as_of {as_of}: {late}")
     if "currency" in checks and latest is not None:
         stale = [(c["claim_id"], latest[claim_key(c)]) for c in cited
                  if claim_key(c) in latest and c["claim_id"] != latest[claim_key(c)]]
         if stale:
-            failures.append("cited superseded versions (cited id -> latest visible id): "
-                            + ", ".join(f"{a} -> {b}" for a, b in stale))
+            fail("currency", "cited superseded versions (cited id -> latest visible id): "
+                 + ", ".join(f"{a} -> {b}" for a, b in stale))
     if "roles" in checks and latest is not None:
         current = [c for c in cited if latest.get(claim_key(c)) == c["claim_id"]]
         role_values = {
@@ -171,12 +179,12 @@ def verify_answer(
         for amt in amounts:
             role = amount_role(amt)
             if not any(abs(abs(amt.value) - v) <= amt.tolerance for v in role_values[role]):
-                failures.append(f"amount {amt.text!r} is presented as the {role} figure but does not "
-                                f"match the {role} value of a cited latest claim")
+                fail("roles", f"amount {amt.text!r} is presented as the {role} figure but does not "
+                              f"match the {role} value of a cited latest claim")
     if "scope" in checks and scope:
         outside = [c["claim_id"] for c in cited
                    if any(str(c.get(f)) not in allowed for f, allowed in scope.items())]
         if outside:
             named = ", ".join(f"{f}={'/'.join(sorted(v))}" for f, v in sorted(scope.items()))
-            failures.append(f"cited claims outside the question's scope ({named}): {outside}")
-    return Verification(not failures, failures, [a.text for a in amounts])
+            fail("scope", f"cited claims outside the question's scope ({named}): {outside}")
+    return Verification(not failures, failures, [a.text for a in amounts], failed)

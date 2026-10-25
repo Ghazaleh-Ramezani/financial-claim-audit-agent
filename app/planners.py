@@ -269,7 +269,10 @@ class OpenAICompatiblePlanner:
         api_key: str | None = None,
         transport: httpx.BaseTransport | None = None,
         timeout: float = 30.0,
+        system_prompt: str = SYSTEM_PROMPT,
     ):
+        self.system_prompt = system_prompt
+        self.last_message: dict[str, Any] | None = None
         self.model = model or os.environ.get("LLM_MODEL", "gpt-4o-mini")
         self.base_url = (base_url or os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
         api_key = api_key or os.environ.get("LLM_API_KEY", "")
@@ -284,13 +287,16 @@ class OpenAICompatiblePlanner:
             user = state.question
             if state.as_of:
                 user += f"\n(as_of date for this request: {state.as_of.isoformat()})"
-            state.messages = [{"role": "system", "content": SYSTEM_PROMPT},
+            state.messages = [{"role": "system", "content": self.system_prompt},
                               {"role": "user", "content": user}]
         else:
-            for rec, call_id in zip(state.records[-len(state.scratch["pending"]):], state.scratch["pending"], strict=True):
-                payload = {"ok": rec.ok, "result": rec.result, "error": rec.error}
-                state.messages.append({"role": "tool", "tool_call_id": call_id,
-                                       "content": json.dumps(payload, default=str)})
+            pending = state.scratch.get("pending") or []
+            if pending:
+                for rec, call_id in zip(state.records[-len(pending):], pending, strict=True):
+                    payload = {"ok": rec.ok, "result": rec.result, "error": rec.error}
+                    state.messages.append({"role": "tool", "tool_call_id": call_id,
+                                           "content": json.dumps(payload, default=str)})
+            state.scratch["pending"] = []
         resp = self.client.post(
             f"{self.base_url}/chat/completions",
             json={"model": self.model, "messages": state.messages,
@@ -298,6 +304,7 @@ class OpenAICompatiblePlanner:
         )
         resp.raise_for_status()
         msg = resp.json()["choices"][0]["message"]
+        self.last_message = msg
         state.messages.append(msg)
         if msg.get("tool_calls"):
             calls = []

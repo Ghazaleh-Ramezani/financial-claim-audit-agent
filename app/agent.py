@@ -28,7 +28,7 @@ from . import claims as claim_store
 from .database import readonly_connection
 from .planners import AgentState, Final, Planner, parse_as_of, parse_intent, parse_metric, parse_period, render_answer
 from .tools import ToolExecutor
-from .verify import CHECKS, Scope, claim_key, verify_answer
+from .verify import CHECKS, LatestIndex, Scope, claim_key, verify_answer
 
 log = logging.getLogger("agent")
 
@@ -49,6 +49,7 @@ class AgentResult:
     verification: dict[str, Any]
     steps: list[dict[str, Any]] = field(default_factory=list)
     latency_ms: float = 0.0
+    architecture: str = "single"
 
     def to_dict(self, include_trace: bool = True) -> dict[str, Any]:
         d = asdict(self)
@@ -107,17 +108,8 @@ def run_agent(
         if answer_mode == "rendered" and not final.abstain:
             final = _render_from_store(conn, question, final, evidence, effective_as_of, steps, state.step)
 
-        # Current and as-of questions must cite the latest version visible at the
-        # effective date; original and history questions may cite earlier ones.
-        latest = None
-        if not final.abstain and parse_intent(question) == "current":
-            latest = {}
-            for cid in final.citations:
-                if cid in evidence:
-                    key = claim_key(evidence[cid])
-                    newest = claim_store.claim_as_of(conn, *key, effective_as_of)
-                    if newest is not None:
-                        latest[key] = newest["claim_id"]
+        latest = None if final.abstain else latest_index(conn, question, final.citations, evidence,
+                                                          effective_as_of)
 
     if final.abstain:
         verification = {"passed": True, "failures": [], "checked_amounts": [], "skipped": "abstention"}
@@ -132,7 +124,8 @@ def run_agent(
             answer = "I could not verify an answer against the claim store, so I am not giving one."
             abstained, reason, cited_ids = True, "verification_failed", []
             steps.append({"step": state.step, "type": "verification_rejected",
-                          "rejected_answer": final.answer, "failures": v.failures})
+                          "rejected_answer": final.answer, "failures": v.failures,
+                          "checks_failed": v.checks_failed})
 
     result = AgentResult(
         trace_id=trace_id, question=question,
@@ -150,6 +143,22 @@ def run_agent(
                          "verification_passed": verification["passed"],
                          "latency_ms": result.latency_ms}))
     return result
+
+
+def latest_index(conn, question: str, citations: list[int], evidence: dict[int, dict[str, Any]],
+                 as_of: date | None) -> LatestIndex | None:
+    """For current and as-of questions, the latest version visible at ``as_of`` of every
+    cited figure; None for original and history questions, which may cite earlier ones."""
+    if parse_intent(question) != "current":
+        return None
+    latest: LatestIndex = {}
+    for cid in citations:
+        if cid in evidence:
+            key = claim_key(evidence[cid])
+            newest = claim_store.claim_as_of(conn, *key, as_of)
+            if newest is not None:
+                latest[key] = newest["claim_id"]
+    return latest
 
 
 def question_scope(conn, question: str) -> Scope:

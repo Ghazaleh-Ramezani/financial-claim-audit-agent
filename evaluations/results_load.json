@@ -1,0 +1,173 @@
+{
+ "environment": {
+  "cpu_cores": 2,
+  "python": "3.13.16",
+  "uvicorn": "0.53.0",
+  "fastapi": "0.156.4",
+  "sqlalchemy": "2.1.6",
+  "postgresql": "16.15",
+  "workers": 1,
+  "note": "load generator on the same 2-core machine as the server and the database"
+ },
+ "runs": [
+  {
+   "label": "postgres-single",
+   "architecture": "single",
+   "database": "postgresql",
+   "levels": [
+    {
+     "concurrency": 1,
+     "requests": 2000,
+     "wall_s": 7.99,
+     "throughput_rps": 250.4,
+     "latency_ms": {
+      "p50": 4.01,
+      "p95": 5.07,
+      "p99": 5.99,
+      "mean": 3.99
+     },
+     "non_2xx": 0
+    },
+    {
+     "concurrency": 4,
+     "requests": 2000,
+     "wall_s": 6.42,
+     "throughput_rps": 311.6,
+     "latency_ms": {
+      "p50": 12.53,
+      "p95": 19.11,
+      "p99": 22.04,
+      "mean": 12.83
+     },
+     "non_2xx": 0
+    },
+    {
+     "concurrency": 16,
+     "requests": 2000,
+     "wall_s": 5.7,
+     "throughput_rps": 351.0,
+     "latency_ms": {
+      "p50": 41.81,
+      "p95": 81.33,
+      "p99": 111.86,
+      "mean": 45.47
+     },
+     "non_2xx": 0
+    }
+   ],
+   "server_metrics_delta": {
+    "agent_runs_total{architecture=\"single\",outcome=\"answered\"}": 4008.0,
+    "agent_runs_total{architecture=\"single\",outcome=\"abstained\"}": 1992.0,
+    "agent_abstentions_total{architecture=\"single\",reason=\"no_evidence\"}": 801.0,
+    "agent_abstentions_total{architecture=\"single\",reason=\"unresolved\"}": 795.0,
+    "agent_abstentions_total{architecture=\"single\",reason=\"write_request_refused\"}": 396.0
+   }
+  },
+  {
+   "label": "postgres-multi",
+   "architecture": "multi",
+   "database": "postgresql",
+   "levels": [
+    {
+     "concurrency": 1,
+     "requests": 2000,
+     "wall_s": 11.18,
+     "throughput_rps": 179.0,
+     "latency_ms": {
+      "p50": 5.99,
+      "p95": 6.96,
+      "p99": 7.48,
+      "mean": 5.59
+     },
+     "non_2xx": 0
+    },
+    {
+     "concurrency": 4,
+     "requests": 2000,
+     "wall_s": 10.14,
+     "throughput_rps": 197.2,
+     "latency_ms": {
+      "p50": 20.48,
+      "p95": 31.02,
+      "p99": 36.4,
+      "mean": 20.28
+     },
+     "non_2xx": 0
+    },
+    {
+     "concurrency": 16,
+     "requests": 2000,
+     "wall_s": 10.8,
+     "throughput_rps": 185.2,
+     "latency_ms": {
+      "p50": 84.06,
+      "p95": 138.52,
+      "p99": 171.86,
+      "mean": 86.29
+     },
+     "non_2xx": 0
+    }
+   ],
+   "server_metrics_delta": {
+    "agent_runs_total{architecture=\"multi\",outcome=\"answered\"}": 4008.0,
+    "agent_runs_total{architecture=\"multi\",outcome=\"abstained\"}": 1992.0,
+    "agent_abstentions_total{architecture=\"multi\",reason=\"no_evidence\"}": 801.0,
+    "agent_abstentions_total{architecture=\"multi\",reason=\"out_of_scope\"}": 795.0,
+    "agent_abstentions_total{architecture=\"multi\",reason=\"write_request_refused\"}": 396.0
+   }
+  },
+  {
+   "label": "sqlite-single",
+   "architecture": "single",
+   "database": "sqlite",
+   "levels": [
+    {
+     "concurrency": 1,
+     "requests": 2000,
+     "wall_s": 5.98,
+     "throughput_rps": 334.5,
+     "latency_ms": {
+      "p50": 2.98,
+      "p95": 3.64,
+      "p99": 4.25,
+      "mean": 2.99
+     },
+     "non_2xx": 0
+    },
+    {
+     "concurrency": 4,
+     "requests": 2000,
+     "wall_s": 5.06,
+     "throughput_rps": 395.5,
+     "latency_ms": {
+      "p50": 9.52,
+      "p95": 16.95,
+      "p99": 21.18,
+      "mean": 10.11
+     },
+     "non_2xx": 0
+    },
+    {
+     "concurrency": 16,
+     "requests": 2000,
+     "wall_s": 5.4,
+     "throughput_rps": 370.1,
+     "latency_ms": {
+      "p50": 41.41,
+      "p95": 68.63,
+      "p99": 82.25,
+      "mean": 43.16
+     },
+     "non_2xx": 0
+    }
+   ],
+   "server_metrics_delta": {
+    "agent_runs_total{architecture=\"single\",outcome=\"answered\"}": 4008.0,
+    "agent_runs_total{architecture=\"single\",outcome=\"abstained\"}": 1992.0,
+    "agent_abstentions_total{architecture=\"single\",reason=\"no_evidence\"}": 801.0,
+    "agent_abstentions_total{architecture=\"single\",reason=\"unresolved\"}": 795.0,
+    "agent_abstentions_total{architecture=\"single\",reason=\"write_request_refused\"}": 396.0
+   }
+  }
+ ]
+}

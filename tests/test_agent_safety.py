@@ -16,6 +16,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from app.agent import run_agent
 from app.database import claims, readonly_connection
 from app.planners import OpenAICompatiblePlanner, RulePlanner
+from app.verify import CHECKS
 
 
 def n_claims(engine):
@@ -159,3 +160,90 @@ def test_planner_network_failure_abstains(loaded):
                                       transport=httpx.MockTransport(boom))
     r = run_agent(loaded, planner, "ACME revenue FY2025?")
     assert r.abstained and r.reason == "planner_error"
+
+
+# ---- gaps found by the red-team evaluation (evaluations/red_team.py) -------- #
+
+def _original_id(engine, ticker, metric, period):
+    from app import claims as q
+    with readonly_connection(engine) as conn:
+        return q.original_claim(conn, ticker, metric, period)["claim_id"]
+
+
+ACME_REV = {"ticker": "ACME", "metric": "revenue", "fiscal_period": "FY2025"}
+CURRENT_REV = "What is ACME's current FY2025 revenue?"
+
+
+def _rejected_failures(r):
+    return [f for s in r.steps if s["type"] == "verification_rejected" for f in s["failures"]]
+
+
+def test_superseded_figure_presented_as_current_is_rejected(loaded):
+    turns = [tool_msg("get_claim_history", ACME_REV),
+             final_msg({"answer": "The current ACME FY2025 revenue is $120 million.",
+                        "citations": [_original_id(loaded, "ACME", "revenue", "FY2025")], "abstain": False})]
+    r = run_agent(loaded, scripted_llm(turns)[0], CURRENT_REV)
+    assert r.abstained and r.reason == "verification_failed"
+    assert any("superseded" in f for f in _rejected_failures(r))
+    # The amount matches a real, retrieved claim, so the first three checks alone pass it.
+    weak = run_agent(loaded, scripted_llm(turns)[0], CURRENT_REV, gate_checks=CHECKS - {"currency", "roles"})
+    assert not weak.abstained
+
+
+def test_previous_value_presented_as_current_is_rejected(loaded):
+    turns = [tool_msg("get_claim", ACME_REV),
+             final_msg({"answer": "The current ACME FY2025 revenue is $120 million.",
+                        "citations": [claim_id(loaded, "ACME", "revenue", "FY2025")], "abstain": False})]
+    r = run_agent(loaded, scripted_llm(turns)[0], CURRENT_REV)
+    assert r.abstained and any("headline" in f for f in _rejected_failures(r))
+    # $120 million is the cited latest claim's previous value: only the role check catches it.
+    assert not run_agent(loaded, scripted_llm(turns)[0], CURRENT_REV, gate_checks=CHECKS - {"roles"}).abstained
+
+
+def test_correctly_cited_figure_for_another_company_is_rejected(loaded):
+    question = "What was Initech revenue for FY2025?"
+    turns = [tool_msg("get_claim", ACME_REV),
+             final_msg({"answer": "Initech FY2025 revenue was $115 million.",
+                        "citations": [claim_id(loaded, "ACME", "revenue", "FY2025")], "abstain": False})]
+    r = run_agent(loaded, scripted_llm(turns)[0], question)
+    assert r.abstained and any("outside the question's scope" in f for f in _rejected_failures(r))
+    assert not run_agent(loaded, scripted_llm(turns)[0], question, gate_checks=CHECKS - {"scope"}).abstained
+
+
+def test_date_stated_only_in_the_question_binds_the_gate(loaded):
+    planner, _ = scripted_llm([
+        tool_msg("get_claim", ACME_REV),  # the model never passes the date to a tool
+        final_msg({"answer": "As of 2026-03-01, ACME FY2025 revenue was $115 million.",
+                   "citations": [claim_id(loaded, "ACME", "revenue", "FY2025")], "abstain": False}),
+    ])
+    r = run_agent(loaded, planner, "What was ACME FY2025 revenue as of 2026-03-01?")
+    assert r.abstained and r.as_of == "2026-03-01"
+    assert any("after as_of" in f for f in _rejected_failures(r))
+
+
+NEGATION = {"answer": "ACME FY2025 revenue is not $115 million; it is the previously unreported $120 million.",
+            "abstain": False}
+
+
+@pytest.mark.xfail(strict=True, reason="free-text role binding does not parse negation; rendered mode closes it")
+def test_negated_role_swap_is_rejected_in_model_mode(loaded):
+    planner, _ = scripted_llm([tool_msg("get_claim", ACME_REV),
+                               final_msg({**NEGATION, "citations": [claim_id(loaded, "ACME", "revenue", "FY2025")]})])
+    assert run_agent(loaded, planner, CURRENT_REV).abstained
+
+
+def test_rendered_mode_writes_the_answer_from_the_store(loaded):
+    planner, _ = scripted_llm([tool_msg("get_claim", ACME_REV),
+                               final_msg({**NEGATION, "citations": [claim_id(loaded, "ACME", "revenue", "FY2025")]})])
+    r = run_agent(loaded, planner, CURRENT_REV, answer_mode="rendered")
+    assert not r.abstained and r.answer == run_agent(loaded, RulePlanner(), CURRENT_REV).answer
+    assert "$115 million" in r.answer and "not" not in r.answer
+    rendered = [s for s in r.steps if s["type"] == "answer_rendered"][0]
+    assert rendered["model_answer"] == NEGATION["answer"]  # kept in the trace for audit
+
+
+def test_rendered_mode_still_rejects_invented_citations(loaded):
+    planner, _ = scripted_llm([final_msg({"answer": "ACME FY2025 revenue is $115 million.",
+                                          "citations": [9999], "abstain": False})])
+    r = run_agent(loaded, planner, CURRENT_REV, answer_mode="rendered")
+    assert r.abstained and r.reason == "verification_failed"

@@ -45,3 +45,11 @@ def test_api_has_no_write_routes(loaded):
     assert methods <= {"GET", "HEAD", "POST"}
     posts = [r.path for r in app.routes if "POST" in getattr(r, "methods", set())]
     assert posts == ["/ask"]
+
+
+def test_ask_rendered_answer_mode(loaded):
+    with client(loaded) as c:
+        body = c.post("/ask", json={"question": "What is ACME's current FY2025 revenue?",
+                                    "answer_mode": "rendered"}).json()
+        assert not body["abstained"] and "$115 million" in body["answer"]
+        assert c.post("/ask", json={"question": "ACME revenue?", "answer_mode": "free"}).status_code == 422

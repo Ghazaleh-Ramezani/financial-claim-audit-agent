@@ -3,8 +3,8 @@
 Two planners share one interface and one executor/verification path:
 
 * ``RulePlanner`` — deterministic and offline. It parses the question, chooses
-  tools, and writes the answer only from tool results. Used in tests, CI and the
-  evaluation so results are reproducible without an API key.
+  tools, and writes the answer only from tool results (``render_answer``). Used
+  in tests, CI and the evaluation so results are reproducible without an API key.
 * ``OpenAICompatiblePlanner`` — an LLM with function calling over any
   OpenAI-compatible ``/chat/completions`` endpoint (configured by environment).
 
@@ -173,45 +173,58 @@ class RulePlanner:
         label = f"{s['ticker']} {s['period']} {s['metric'].replace('_', ' ')}"
         if not last.ok:
             return Final(f"The lookup failed: {last.error}", abstain=True, reason="tool_error")
-        result = last.result
-        if not result:
+        if not last.result:
             when = f" published on or before {s['as_of']}" if s.get("as_of") else ""
             return Final(f"No filing{when} reports {label}.", abstain=True, reason="no_evidence")
+        return render_answer(s["intent"], last.result, s.get("as_of"))
 
-        def src(c: dict[str, Any]) -> str:
-            return f"{c['form_type']} {c['accession']}, filed {c['filed_at']}"
 
-        if s["intent"] == "as_of":
-            c = result
-            text = (f"As of {s['as_of']}, the latest published {label} was {c['display']} "
-                    f"({src(c)}). Filings published after {s['as_of']} were excluded.")
-            return Final(text, [c["claim_id"]])
-        if s["intent"] == "current":
-            c = result
-            text = f"The current {label} is {c['display']} ({src(c)})."
-            if c["status"] == "restated":
-                text += (f" This is a restatement; the previous figure was "
-                         f"{_display_like(c, c['previous_value'])}.")
-            return Final(text, [c["claim_id"]])
+def render_answer(intent: str, result: dict[str, Any] | list[dict[str, Any]],
+                  as_of: date | None = None) -> Final:
+    """Answer text written from claim-store records only.
 
-        history: list[dict[str, Any]] = result
-        first, latest = history[0], history[-1]
-        if s["intent"] == "original":
-            text = f"The originally reported {label} was {first['display']} ({src(first)})."
-            if latest["claim_id"] != first["claim_id"] and latest["value"] != first["value"]:
-                text += f" It was later restated to {latest['display']} ({src(latest)})."
-            elif len(history) == 1:
-                text += " It has not been restated."
-            return Final(text, [first["claim_id"], latest["claim_id"]] if latest is not first else [first["claim_id"]])
+    ``result`` is one claim for the "current" and "as_of" intents and the version
+    history (oldest first) for "original" and "history". Every number in the text
+    is a value of a returned claim, so the text cannot misstate a figure. Used by
+    the rule planner and, in rendered answer mode, for any planner.
+    """
+    head = result if isinstance(result, dict) else result[0]
+    label = f"{head['ticker']} {head['fiscal_period']} {head['metric'].replace('_', ' ')}"
 
-        restated = [h for h in history if h["status"] == "restated"]
-        if not restated:
-            text = (f"{label} has not been restated: {_count(len(history))}, "
-                    f"current value {latest['display']} ({src(latest)}).")
-            return Final(text, [h["claim_id"] for h in history])
-        parts = [f"{h['display']} ({src(h)}, {h['status']})" for h in history]
-        text = f"{label} has {_count(len(history))}: " + "; ".join(parts) + "."
+    def src(c: dict[str, Any]) -> str:
+        return f"{c['form_type']} {c['accession']}, filed {c['filed_at']}"
+
+    if intent == "as_of":
+        c = result
+        text = (f"As of {as_of}, the latest published {label} was {c['display']} "
+                f"({src(c)}). Filings published after {as_of} were excluded.")
+        return Final(text, [c["claim_id"]])
+    if intent == "current":
+        c = result
+        text = f"The current {label} is {c['display']} ({src(c)})."
+        if c["status"] == "restated":
+            text += (f" This is a restatement; the previous figure was "
+                     f"{_display_like(c, c['previous_value'])}.")
+        return Final(text, [c["claim_id"]])
+
+    history: list[dict[str, Any]] = result
+    first, latest = history[0], history[-1]
+    if intent == "original":
+        text = f"The originally reported {label} was {first['display']} ({src(first)})."
+        if latest["claim_id"] != first["claim_id"] and latest["value"] != first["value"]:
+            text += f" It was later restated to {latest['display']} ({src(latest)})."
+        elif len(history) == 1:
+            text += " It has not been restated."
+        return Final(text, [first["claim_id"], latest["claim_id"]] if latest is not first else [first["claim_id"]])
+
+    restated = [h for h in history if h["status"] == "restated"]
+    if not restated:
+        text = (f"{label} has not been restated: {_count(len(history))}, "
+                f"current value {latest['display']} ({src(latest)}).")
         return Final(text, [h["claim_id"] for h in history])
+    parts = [f"{h['display']} ({src(h)}, {h['status']})" for h in history]
+    text = f"{label} has {_count(len(history))}: " + "; ".join(parts) + "."
+    return Final(text, [h["claim_id"] for h in history])
 
 
 _WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
@@ -323,4 +336,4 @@ def planner_from_env() -> Planner:
 
 
 __all__ = ["AgentState", "Final", "ToolCall", "RulePlanner", "OpenAICompatiblePlanner",
-           "planner_from_env", "parse_as_of", "parse_period", "parse_metric"]
+           "planner_from_env", "parse_as_of", "parse_intent", "parse_period", "parse_metric", "render_answer"]

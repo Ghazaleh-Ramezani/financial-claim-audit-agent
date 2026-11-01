@@ -20,6 +20,24 @@ $120.0M; a 10-K/A (filed 2026-05-10) restates it to $115.0M. The system answers:
 | What is the current figure? | $115M, 10-K/A SYN-ACME-26-000187 — flagged as a restatement of $120M |
 | What was known as of 2026-03-01? | $120M; the 10-K/A is excluded because it was published later |
 
+## Results at a glance
+
+All measured on synthetic filings, against planners and roles that are scripted
+or deterministic. Each row links to the section that qualifies it.
+
+| What was tested | Result |
+|---|---|
+| [Red team](#red-team-evaluation): 30 attacks in 10 classes, by a planner that has fully followed the injected instruction | **0/30** succeed with rendered answers and the full gate; 1/30 with model-written answers; 26/30 with no gate |
+| [Gate ablation](#red-team-evaluation): each of the six checks switched off in turn | every one lets through at least one attack the others stop |
+| [Injection planted in filings](#evaluation-single-agent-vs-multi-agent): 16 attacks, instruction-following policy in every role | 0 integrity breaches for the multi-agent pipeline and for rendered single-agent answers; 3 for model-written single-agent answers; all 16 contained once tools stop returning filing text |
+| [Fault recovery](#evaluation-single-agent-vs-multi-agent): 10% fault rate per role call, 30 cases × 20 seeds | 98.7% correct for the multi-agent pipeline with one retry, 87.8% for the single agent; no configuration released a wrong answer |
+| [Fixed evaluation](#evaluation): 30 cases, deterministic planner | 29/30; the miss is a paraphrase the rule planner has no mapping for |
+| [Tests](#tests) | 87 passing, plus one strict `xfail` that records the attack free-text checks cannot stop; CI runs the suite on SQLite and PostgreSQL 16 |
+
+What none of this measures is how often a real hosted model follows an
+injection. That run, with hosted models in the planner and role seats, is the
+next step.
+
 ## Architecture
 
 ```

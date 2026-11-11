@@ -37,6 +37,21 @@ services:
     ports:
       - "9090:9090"
 
+  # Same profile: Grafana with the Prometheus datasource and the claim-audit dashboard provisioned (:3000)
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: ["monitoring"]
+    depends_on: [prometheus]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"      # local demo only
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/claim-audit.json
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+
   # Optional: docker compose --profile graph up   (knowledge graph in Neo4j; browser on :7474)
   neo4j:
     image: neo4j:5-community

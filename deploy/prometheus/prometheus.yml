@@ -8,3 +8,7 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["api:8000"]
+  # Kafka ingestion consumer (docker compose --profile streaming); down unless that profile runs.
+  - job_name: claim-audit-ingest
+    static_configs:
+      - targets: ["ingest-consumer:9102"]

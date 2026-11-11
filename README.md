@@ -38,7 +38,7 @@ or deterministic. Each row links to the section that qualifies it.
 | [Fixed evaluation](#evaluation): 30 cases, deterministic planner | 29/30; the miss is a paraphrase the rule planner has no mapping for |
 | [Knowledge graph](#knowledge-graph-neo4j) | Graph answers equal the relational store's on every as-of boundary; Neo4j equals the in-memory graph on every query (CI) |
 | [Streaming ingestion](#streaming-ingestion-kafka) | At-least-once with commit after produce; replaying the whole topic adds 0 claims; bad documents go to a dead-letter topic |
-| [Tests](#tests) | 113 passing plus 2 that need live Neo4j and Kafka (run in CI), and one strict `xfail` that records the attack free-text checks cannot stop; CI runs the suite on SQLite and PostgreSQL 16 |
+| [Tests](#tests) | 116 passing plus 2 that need live Neo4j and Kafka (run in CI), and one strict `xfail` that records the attack free-text checks cannot stop; CI runs the suite on SQLite and PostgreSQL 16 |
 
 What none of this measures is how often a real hosted model follows an
 injection. That run, with hosted models in the planner and role seats, is the
@@ -166,7 +166,7 @@ curl -s localhost:8000/metrics | grep agent_runs_total
 python -m evaluations.run_eval --architecture multi      # 30 cases through the multi-agent pipeline
 python -m evaluations.multi_agent                        # single vs multi: accuracy, containment, recovery
 python scripts/load_test.py --base-url http://127.0.0.1:8000 --requests 2000 --concurrency 1 4 16
-docker compose --profile monitoring up --build           # adds Prometheus with the alert rules
+docker compose --profile monitoring up --build           # adds Prometheus (alert rules) and Grafana on :3000
 ```
 
 ## Tests
@@ -176,11 +176,11 @@ pytest -q                                                                  # SQL
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/claims pytest -q   # PostgreSQL
 ```
 
-113 tests, 2 live-service tests and one strict `xfail`: ingestion validation,
+116 tests, 2 live-service tests and one strict `xfail`: ingestion validation,
 idempotency, restatement history, as-of boundaries (day before / day of each filing),
 agent tool use, safety, the verification gate, rendered answers, the red-team
 invariants, the multi-agent contracts, failure routing and evaluation invariants, the
-alert rules against the service's own metrics, the API, the knowledge graph, Kafka
+alert rules and the Grafana dashboard against the service's own metrics, the API, the knowledge graph, Kafka
 ingestion, and the AWS ingestion steps (against moto). The strict `xfail` records the
 one attack that free-text verification does not stop (below); it turns into a failure
 if that ever changes.
@@ -192,7 +192,7 @@ CI (`.github/workflows/tests.yml`) has five jobs:
 | `test` | ruff, the suite on SQLite and on PostgreSQL 16, the 30-case evaluation |
 | `integration` | Neo4j parity and the Kafka round trip against real Neo4j 5 and Kafka 3.8 containers (fails if they are skipped) |
 | `terraform` | `terraform fmt -check`, `validate` and `tflint` (AWS ruleset) on `deploy/terraform/aws` |
-| `docker` | Docker Compose stack + end-to-end smoke test; the ingest Lambda image invoked through the Lambda Runtime Interface Emulator |
+| `docker` | Docker Compose stack + end-to-end smoke test; Prometheus scraping and the provisioned Grafana dashboard; the ingest Lambda image invoked through the Lambda Runtime Interface Emulator |
 | `kubernetes` | `helm lint`, kubeconform on the rendered manifests, install on a kind cluster, `helm test`, smoke test through the Service |
 
 ## Evaluation
@@ -413,6 +413,13 @@ each role.
   rate, p95 latency. `tests/test_alerts.py` checks that every metric and label the
   rules use is defined and exported by the service. `docker compose --profile
   monitoring up` adds Prometheus with this configuration.
+* **Dashboard** (`deploy/grafana/`): `docker compose --profile monitoring up` also starts
+  Grafana on :3000 with the Prometheus datasource and the claim-audit dashboard provisioned:
+  request rate, abstention rate, unregistered tool calls, p95 latency, runs by outcome,
+  abstentions by reason, gate failures by check, tool calls, latency percentiles,
+  multi-agent retries, and Kafka ingestion outcomes. `tests/test_grafana.py` checks that every
+  query uses metrics and labels the service exports and that every service metric is on the
+  dashboard.
 
 **Load test** (`scripts/load_test.py`, results in `evaluations/results_load.md`):
 2,000 requests per concurrency level cycling through the 30 evaluation questions,
@@ -519,6 +526,7 @@ monitoring thresholds and the known limitations.
 | FastAPI + Docker Compose | Implemented; compose stack verified in CI |
 | Probes, request ids, Prometheus metrics | Implemented, tested; load-tested on PostgreSQL 16 |
 | Alert rules | Configured; checked by tests against the service's metrics |
+| Grafana dashboard | Provisioned in Docker Compose; queries checked by tests; loaded by Grafana in CI |
 | Knowledge graph (in-memory and Neo4j) | Implemented; tested against the relational store and, in CI, against Neo4j 5 |
 | Kafka streaming ingestion with dead-letter topic | Implemented; unit-tested and round-trip tested against Kafka 3.8 in CI |
 | AWS infrastructure (Terraform: ECS Fargate, RDS, S3, EventBridge, Step Functions, Lambda) | Written; `fmt`, `validate` and `tflint` in CI; Lambda steps tested with moto; applying it needs an AWS account |

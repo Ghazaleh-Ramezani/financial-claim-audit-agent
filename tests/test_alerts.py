@@ -56,3 +56,25 @@ def test_alerted_series_appear_in_the_exposition(loaded):
     for rule in rules():
         for metric in re.findall(r"\b((?:agent|gate|tool|multiagent)_\w+)\b", rule["expr"]):
             assert re.search(rf"^{metric}[{{ ]", text, re.M), (rule["alert"], metric)
+
+
+def test_ingestion_alert_rules_reference_stream_metrics():
+    from app import stream
+
+    group = yaml.safe_load(RULES.read_text())["groups"][1]
+    assert group["name"] == "claim-audit-ingestion"
+    defined = {stream.MESSAGES._name: set(stream.MESSAGES._labelnames),
+               stream.RESTATEMENTS._name: set(stream.RESTATEMENTS._labelnames)}
+    for rule in group["rules"]:
+        used = set(re.findall(r"\b(stream_\w+)\b", rule["expr"]))
+        assert used, rule["alert"]
+        for metric in used:
+            base = SUFFIX.sub("", metric)
+            assert base in defined, (rule["alert"], metric)
+            for name in re.findall(r"(\w+)\s*(?:!=|=~|=)\s*\"", rule["expr"]):
+                assert name in defined[base], (rule["alert"], name)
+
+
+def test_helm_chart_ships_the_same_alert_rules():
+    chart_copy = RULES.parents[1] / "helm/claim-audit/files/alerts.yml"
+    assert chart_copy.read_text() == RULES.read_text()

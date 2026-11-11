@@ -51,3 +51,20 @@ groups:
         labels: {severity: ticket}
         annotations:
           summary: "p95 agent latency above 500 ms ({{ $labels.architecture }})."
+
+  # Kafka ingestion consumer (app/stream.py; scrape its --metrics-port).
+  - name: claim-audit-ingestion
+    rules:
+      - alert: FilingsDeadLettered
+        # A filing failed validation and went to the dead-letter topic (filings.rejected).
+        expr: increase(stream_messages_total{outcome="rejected"}[15m]) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: A filing from Kafka was rejected; inspect the dead-letter topic.
+
+      - alert: RestatementDetected
+        # Informational: a filing restated a previously published figure.
+        expr: increase(stream_restatements_total[15m]) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: A newly ingested filing restated an earlier figure.

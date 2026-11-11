@@ -37,13 +37,136 @@ jobs:
         if: matrix.database == 'sqlite'
         run: python -m evaluations.run_eval
 
+  # Knowledge graph against Neo4j and streaming ingestion against a Kafka broker.
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: claims
+          POSTGRES_PASSWORD: claims
+          POSTGRES_DB: claims
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U claims" --health-interval 3s --health-retries 20
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/ci-graph-password
+        ports: ["7687:7687"]
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p ci-graph-password 'RETURN 1'"
+          --health-interval 5s --health-timeout 10s --health-retries 40
+      kafka:
+        image: apache/kafka:3.8.0
+        ports: ["9092:9092"]
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s --health-timeout 10s --health-retries 40
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://claims:claims@localhost:5432/claims
+      NEO4J_URI: bolt://localhost:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ci-graph-password
+      KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Neo4j parity and Kafka round trip (no skips allowed)
+        run: |
+          set -o pipefail
+          pytest -q -rs tests/test_graph.py tests/test_stream.py tests/test_aws_ingest.py | tee pytest.log
+          ! grep -q SKIPPED pytest.log
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/terraform/aws
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - run: terraform fmt -check -recursive -diff
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+      - uses: terraform-linters/setup-tflint@v4
+      - run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - run: tflint --format compact
+
   docker:
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose up -d --build
-      - run: ./scripts/smoke_test.sh http://localhost:8000
+      - run: docker compose --profile monitoring up -d --build
+      - run: sh ./scripts/smoke_test.sh http://localhost:8000
+      - name: Prometheus scrapes the API; Grafana loads the provisioned datasource and dashboard
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS localhost:9090/api/v1/targets | grep -q '"job":"claim-audit-agent".*"health":"up"' && break; sleep 2
+          done
+          curl -fsS localhost:9090/api/v1/targets | grep -q '"health":"up"'
+          for i in $(seq 1 30); do curl -fsS localhost:3000/api/health && break; sleep 2; done
+          curl -fsS localhost:3000/api/datasources/uid/prometheus | grep -q '"type":"prometheus"'
+          curl -fsS localhost:3000/api/dashboards/uid/claim-audit | grep -q '"title":"Claim-audit agent"'
+          curl -fsS -G localhost:9090/api/v1/query --data-urlencode 'query=sum(agent_runs_total)' | grep -q '"result":\[{'
       - if: failure()
-        run: docker compose logs
-      - run: docker compose down -v
+        run: docker compose --profile monitoring logs
+      - run: docker compose --profile monitoring down -v
+      - name: Ingest Lambda image loads and dispatches (Lambda Runtime Interface Emulator)
+        run: |
+          docker build -f deploy/lambda/Dockerfile -t claim-audit-ingest .
+          docker run -d --name ingest -p 9000:8080 claim-audit-ingest
+          sleep 3
+          out=$(curl -s -X POST localhost:9000/2015-03-31/functions/function/invocations -d '{"action": "not-a-step"}')
+          echo "$out"
+          echo "$out" | grep -Eq '"errorType": ?"ValueError"'
+          docker rm -f ingest
+
+  kubernetes:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint and render the chart
+        run: |
+          helm lint deploy/helm/claim-audit
+          helm template ci deploy/helm/claim-audit \
+            --set monitoring.serviceMonitor.enabled=true --set monitoring.prometheusRule.enabled=true \
+            --set ingress.enabled=true > rendered.yaml
+      - name: Validate manifests against the Kubernetes schemas
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -strict -summary -ignore-missing-schemas rendered.yaml
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: claim-audit
+      - name: Build the image and load it into kind
+        run: |
+          docker build -t claim-audit-api:ci .
+          kind load docker-image claim-audit-api:ci --name claim-audit
+      - name: Install, wait for readiness, run the chart test
+        run: |
+          helm install claim-audit deploy/helm/claim-audit \
+            --set image.tag=ci --set image.pullPolicy=Never --wait --timeout 5m
+          kubectl get pods -o wide
+          helm test claim-audit --logs
+      - name: End-to-end smoke test through the Service
+        run: |
+          kubectl port-forward svc/claim-audit 8000:80 &
+          sleep 3
+          sh ./scripts/smoke_test.sh http://localhost:8000
+      - if: failure()
+        run: |
+          kubectl describe pods
+          kubectl logs -l app.kubernetes.io/name=claim-audit --tail=100

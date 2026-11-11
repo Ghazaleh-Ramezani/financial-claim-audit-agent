@@ -10,6 +10,10 @@ someone asks what was known **as of** a given date.
 > traces, Prometheus metrics and alert rules, a load test, a red-team evaluation
 > of the agent, and a multi-agent variant (LangGraph) compared against the single
 > agent on accuracy, containment of injected instructions, and fault recovery.
+> Around it: a Neo4j knowledge graph of filings and claim versions, Kafka streaming
+> ingestion with a dead-letter topic, an AWS deployment in Terraform (ECS Fargate,
+> RDS, S3 → EventBridge → Step Functions → Lambda), a Helm chart installed on a
+> Kubernetes cluster in CI, and a model-risk mapping to SR 11-7 and the NIST AI RMF.
 
 Example (synthetic data): ACME's 10-K (filed 2026-02-15) reports FY2025 revenue of
 $120.0M; a 10-K/A (filed 2026-05-10) restates it to $115.0M. The system answers:
@@ -32,7 +36,9 @@ or deterministic. Each row links to the section that qualifies it.
 | [Injection planted in filings](#evaluation-single-agent-vs-multi-agent): 16 attacks, instruction-following policy in every role | 0 integrity breaches for the multi-agent pipeline and for rendered single-agent answers; 3 for model-written single-agent answers; all 16 contained once tools stop returning filing text |
 | [Fault recovery](#evaluation-single-agent-vs-multi-agent): 10% fault rate per role call, 30 cases × 20 seeds | 98.7% correct for the multi-agent pipeline with one retry, 87.8% for the single agent; no configuration released a wrong answer |
 | [Fixed evaluation](#evaluation): 30 cases, deterministic planner | 29/30; the miss is a paraphrase the rule planner has no mapping for |
-| [Tests](#tests) | 87 passing, plus one strict `xfail` that records the attack free-text checks cannot stop; CI runs the suite on SQLite and PostgreSQL 16 |
+| [Knowledge graph](#knowledge-graph-neo4j) | Graph answers equal the relational store's on every as-of boundary; Neo4j equals the in-memory graph on every query (CI) |
+| [Streaming ingestion](#streaming-ingestion-kafka) | At-least-once with commit after produce; replaying the whole topic adds 0 claims; bad documents go to a dead-letter topic |
+| [Tests](#tests) | 113 passing plus 2 that need live Neo4j and Kafka (run in CI), and one strict `xfail` that records the attack free-text checks cannot stop; CI runs the suite on SQLite and PostgreSQL 16 |
 
 What none of this measures is how often a real hosted model follows an
 injection. That run, with hosted models in the planner and role seats, is the
@@ -170,15 +176,24 @@ pytest -q                                                                  # SQL
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/claims pytest -q   # PostgreSQL
 ```
 
-87 tests plus one strict `xfail`: ingestion validation, idempotency, restatement
-history, as-of boundaries (day before / day of each filing), agent tool use,
-safety, the verification gate, rendered answers, the red-team invariants, the
-multi-agent contracts, failure routing and evaluation invariants, the alert rules
-against the service's own metrics, and the API. The strict `xfail` records the one
-attack that free-text verification does not stop (below); it turns into a failure
-if that ever changes. CI (`.github/workflows/tests.yml`) runs the suite on SQLite
-and on PostgreSQL 16, runs the evaluation, then builds the Docker Compose stack
-and runs the end-to-end smoke test against it.
+113 tests, 2 live-service tests and one strict `xfail`: ingestion validation,
+idempotency, restatement history, as-of boundaries (day before / day of each filing),
+agent tool use, safety, the verification gate, rendered answers, the red-team
+invariants, the multi-agent contracts, failure routing and evaluation invariants, the
+alert rules against the service's own metrics, the API, the knowledge graph, Kafka
+ingestion, and the AWS ingestion steps (against moto). The strict `xfail` records the
+one attack that free-text verification does not stop (below); it turns into a failure
+if that ever changes.
+
+CI (`.github/workflows/tests.yml`) has five jobs:
+
+| Job | What it checks |
+|---|---|
+| `test` | ruff, the suite on SQLite and on PostgreSQL 16, the 30-case evaluation |
+| `integration` | Neo4j parity and the Kafka round trip against real Neo4j 5 and Kafka 3.8 containers (fails if they are skipped) |
+| `terraform` | `terraform fmt -check`, `validate` and `tflint` (AWS ruleset) on `deploy/terraform/aws` |
+| `docker` | Docker Compose stack + end-to-end smoke test; the ingest Lambda image invoked through the Lambda Runtime Interface Emulator |
+| `kubernetes` | `helm lint`, kubeconform on the rendered manifests, install on a kind cluster, `helm test`, smoke test through the Service |
 
 ## Evaluation
 
@@ -416,6 +431,80 @@ the metrics as well as the service. With one worker, throughput levels off after
 a few concurrent requests (single agent: 250, 312, 351 req/s at 1, 4, 16) while
 latency grows with queueing, so the service scales by replicas, one worker each.
 
+## Knowledge graph (Neo4j)
+
+`app/graph.py` projects the claim store into a property graph, so lineage and
+restatement questions become path queries:
+
+```
+(:Company)-[:FILED]->(:Filing)-[:REPORTS]->(:Claim)-[:ABOUT]->(:Company)
+(:Filing)-[:AMENDS]->(:Filing)                       10-K/A -> 10-K
+(:Claim)-[:SUPERSEDES {change, status}]->(:Claim)    later version -> earlier version
+```
+
+The relational store stays the system of record; the graph is a projection of it with no
+filing text in it. Queries: the version chain of a figure, the version visible on a
+date, the lineage of a claim (filing, chain of amended filings, what it supersedes and
+what superseded it, source URI and SHA-256), the impact of one filing (each figure it
+restated or reaffirmed, by how much), and companies with restatements.
+
+```bash
+curl -s localhost:8000/graph/impact/SYN-ACME-26-000187      # what the 10-K/A changed
+curl -s localhost:8000/graph/lineage/8                       # restated revenue -> 10-K/A -> 10-K
+docker compose --profile graph up --build                    # Neo4j + sync; browser on :7474
+python -m app.graph sync                                     # upsert into NEO4J_URI (idempotent MERGEs)
+```
+
+Two stores answer the same queries: an in-memory graph (used by the API) and Neo4j.
+`tests/test_graph.py` checks that the graph agrees with the relational store on every
+as-of boundary (each filing date and the day before it, for every figure), and, in CI,
+that Neo4j returns exactly what the in-memory graph returns for every query and that a
+second sync changes nothing.
+
+## Streaming ingestion (Kafka)
+
+`app/stream.py` consumes filings from `filings.incoming`, writes each in one
+transaction, and publishes the result: an event on `claims.ingested` (with any
+restatements the filing caused) or a dead-letter record on `filings.rejected` (with
+the reason and the original payload).
+
+* **At-least-once, safely.** The offset is committed only after the result is produced
+  and flushed; a crash in between redelivers the message, and ingestion's SHA-256
+  dedupe turns the replay into a `duplicate` event with no new claims
+  (`test_replayed_messages_create_no_new_claims`).
+* **Ordering.** Producers key messages by ticker, so a company's filings share a
+  partition and an amendment follows its original. An amendment that still arrives
+  first is dead-lettered with `retryable: true`.
+* **Monitoring.** `stream_messages_total{outcome}` and `stream_restatements_total`, with
+  the `FilingsDeadLettered` and `RestatementDetected` alerts.
+
+```bash
+docker compose --profile streaming up --build -d             # Kafka (KRaft) + consumer
+docker compose run --rm -e KAFKA_BOOTSTRAP_SERVERS=kafka:9092 --entrypoint python api -m app.stream produce fixtures/filings
+```
+
+## Deployment
+
+* **AWS** (`deploy/terraform/aws/`, details in its README): API on ECS Fargate behind an
+  ALB with autoscaling and circuit-breaker rollback; RDS PostgreSQL 16 with the password
+  managed in Secrets Manager; event-driven ingestion S3 → EventBridge → Step Functions →
+  Lambda (validate, ingest, quarantine to `rejected/`, retry an amendment that arrives
+  before its original); least-privilege IAM per component; CloudWatch alarms to SNS.
+  The Lambda code is `app/aws_ingest.py`, tested against moto's S3 and Secrets Manager.
+* **Kubernetes** (`deploy/helm/claim-audit/`): Deployment with startup, liveness and
+  readiness probes (`/ready` keeps traffic away until the claim store is loaded),
+  non-root read-only container, HPA, PodDisruptionBudget, optional Ingress,
+  ServiceMonitor and PrometheusRule (the same alert rules, checked by a test), and a
+  `helm test` that asks a question end to end.
+* **AWS App Runner**: the single-container demo path in `deploy/aws-app-runner.md`.
+
+## Model risk
+
+`docs/model-risk.md` records the agent as a model inventory entry and maps each control
+and test in this repository to SR 11-7 (development, validation, governance) and the
+NIST AI RMF (Govern, Map, Measure, Manage, and the Generative AI Profile), with the
+monitoring thresholds and the known limitations.
+
 ## Status
 
 | Item | Status |
@@ -430,7 +519,12 @@ latency grows with queueing, so the service scales by replicas, one worker each.
 | FastAPI + Docker Compose | Implemented; compose stack verified in CI |
 | Probes, request ids, Prometheus metrics | Implemented, tested; load-tested on PostgreSQL 16 |
 | Alert rules | Configured; checked by tests against the service's metrics |
-| CI (GitHub Actions) | Configured |
+| Knowledge graph (in-memory and Neo4j) | Implemented; tested against the relational store and, in CI, against Neo4j 5 |
+| Kafka streaming ingestion with dead-letter topic | Implemented; unit-tested and round-trip tested against Kafka 3.8 in CI |
+| AWS infrastructure (Terraform: ECS Fargate, RDS, S3, EventBridge, Step Functions, Lambda) | Written; `fmt`, `validate` and `tflint` in CI; Lambda steps tested with moto; applying it needs an AWS account |
+| Helm chart | Implemented; linted, schema-validated, installed on kind and `helm test`-ed in CI |
+| Model-risk mapping (SR 11-7, NIST AI RMF) | `docs/model-risk.md` |
+| CI (GitHub Actions) | Five jobs (see Tests) |
 | AWS App Runner deployment | Documented in `deploy/aws-app-runner.md`; the image it uses is built and smoke-tested in CI |
 
 Next steps: SEC/XBRL ingestion in place of the synthetic JSON fixtures, PDF

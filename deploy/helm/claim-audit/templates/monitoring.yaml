@@ -1,0 +1,28 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "claim-audit.fullname" . }}
+  labels:
+    {{- include "claim-audit.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "claim-audit.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+{{- end }}
+{{- if .Values.monitoring.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "claim-audit.fullname" . }}
+  labels:
+    {{- include "claim-audit.labels" . | nindent 4 }}
+spec:
+  {{- /* The same rules Prometheus loads in docker compose; tests/test_alerts.py keeps the copies equal. */}}
+  {{- .Files.Get "files/alerts.yml" | nindent 2 }}
+{{- end }}

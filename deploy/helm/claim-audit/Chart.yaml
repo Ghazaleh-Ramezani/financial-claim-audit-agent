@@ -1,0 +1,8 @@
+apiVersion: v2
+name: claim-audit
+description: Tool-using agent over versioned financial claims (FastAPI, verification gate, Prometheus metrics)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [agent, llm, finance, provenance]
+home: https://github.com/Ghazaleh-Ramezani/financial-claim-audit-agent

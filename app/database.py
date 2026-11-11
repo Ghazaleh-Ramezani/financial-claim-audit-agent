@@ -81,7 +81,29 @@ claims = Table(
 
 
 def database_url() -> str:
-    return os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
+    """``DATABASE_URL`` if set; otherwise built from ``DB_HOST``/``DB_USER``/``DB_PASSWORD``.
+
+    The parts form exists for managed deployments (ECS, Lambda, Kubernetes), where the
+    password is injected from a secret store as its own variable and should never be
+    written into a URL in configuration.
+    """
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
+    host = os.environ.get("DB_HOST")
+    if not host:
+        return DEFAULT_DATABASE_URL
+    from sqlalchemy.engine import URL
+
+    return URL.create(
+        "postgresql+psycopg",
+        username=os.environ.get("DB_USER", "claims"),
+        password=os.environ.get("DB_PASSWORD"),
+        host=host,
+        port=int(os.environ.get("DB_PORT", "5432")),
+        database=os.environ.get("DB_NAME", "claims"),
+        query={"sslmode": os.environ["DB_SSLMODE"]} if os.environ.get("DB_SSLMODE") else {},
+    ).render_as_string(hide_password=False)
 
 
 def make_engine(url: str | None = None) -> Engine:

@@ -4,8 +4,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /srv
 
 RUN useradd --create-home --uid 10001 appuser
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-extras.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-extras.txt
 
 COPY app ./app
 COPY fixtures ./fixtures

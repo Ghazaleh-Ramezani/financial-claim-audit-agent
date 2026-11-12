@@ -1,0 +1,68 @@
+image:
+  repository: claim-audit-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+# Planner for /ask: "rule" (deterministic, no secrets) or "llm" (set llm.* below).
+planner: rule
+
+database:
+  # Empty: each pod keeps its own SQLite file and ingests the bundled synthetic filings on
+  # start (a self-contained demo). Set existingSecret to use PostgreSQL instead: the secret
+  # must hold a key DATABASE_URL, e.g. postgresql+psycopg://user:pass@host:5432/claims.
+  existingSecret: ""
+  secretKey: DATABASE_URL
+
+# Ingest the bundled filings when the container starts. Idempotent (SHA-256 dedupe).
+ingestOnStart: true
+
+llm:
+  baseUrl: ""
+  model: ""
+  existingSecret: ""   # secret with key LLM_API_KEY
+  secretKey: LLM_API_KEY
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  host: claim-audit.local
+  annotations: {}
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Creates a ServiceMonitor for the Prometheus Operator (scrapes /metrics) and a
+# PrometheusRule carrying deploy/prometheus/alerts.yml.
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+  prometheusRule:
+    enabled: false
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

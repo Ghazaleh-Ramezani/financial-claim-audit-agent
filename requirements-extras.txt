@@ -1,0 +1,4 @@
+# Optional integrations: knowledge graph (Neo4j), streaming ingestion (Kafka), AWS ingestion (S3, Secrets Manager).
+neo4j>=5.20,<6
+confluent-kafka>=2.5,<3
+boto3>=1.34,<2

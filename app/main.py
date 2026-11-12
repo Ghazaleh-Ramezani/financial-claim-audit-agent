@@ -25,6 +25,7 @@ from . import claims as q
 from . import metrics
 from .agent import run_agent
 from .database import claims, filings, init_db, make_engine, readonly_connection
+from .graph import MemoryGraph, build_graph
 from .multiagent import system_from_env
 from .planners import planner_from_env
 from .tools import Metric
@@ -132,6 +133,30 @@ def create_app(engine=None, planner=None, multi=None) -> FastAPI:
     def restatements(ticker: str | None = None) -> list[dict[str, Any]]:
         with readonly_connection(app.state.engine) as conn:
             return q.restatements(conn, ticker)
+
+    # Knowledge-graph views (app/graph.py): lineage and restatement analytics as path queries.
+    def knowledge_graph() -> MemoryGraph:
+        with readonly_connection(app.state.engine) as conn:
+            return MemoryGraph(build_graph(conn))
+
+    @app.get("/graph/summary")
+    def graph_summary() -> dict[str, int]:
+        return knowledge_graph().g.counts()
+
+    @app.get("/graph/lineage/{claim_id}")
+    def graph_lineage(claim_id: int) -> dict[str, Any]:
+        found = knowledge_graph().lineage(claim_id)
+        if found is None:
+            raise HTTPException(404, "no such claim")
+        return found
+
+    @app.get("/graph/impact/{accession}")
+    def graph_impact(accession: str) -> list[dict[str, Any]]:
+        return knowledge_graph().amendment_impact(accession)
+
+    @app.get("/graph/restated-companies")
+    def graph_restated_companies() -> list[dict[str, Any]]:
+        return knowledge_graph().restated_companies()
 
     return app
 

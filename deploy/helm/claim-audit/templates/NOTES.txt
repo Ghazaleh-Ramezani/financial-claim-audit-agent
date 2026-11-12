@@ -1,0 +1,8 @@
+claim-audit is deployed as {{ include "claim-audit.fullname" . }}.
+
+  kubectl port-forward svc/{{ include "claim-audit.fullname" . }} 8000:{{ .Values.service.port }}
+  curl -s localhost:8000/ready
+  curl -s localhost:8000/ask -H 'content-type: application/json' \
+    -d '{"question": "What is the current ACME FY2025 revenue?"}'
+
+Run the chart's own check:  helm test {{ .Release.Name }}

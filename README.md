@@ -529,7 +529,7 @@ monitoring thresholds and the known limitations.
 | Grafana dashboard | Provisioned in Docker Compose; queries checked by tests; loaded by Grafana in CI |
 | Knowledge graph (in-memory and Neo4j) | Implemented; tested against the relational store and, in CI, against Neo4j 5 |
 | Kafka streaming ingestion with dead-letter topic | Implemented; unit-tested and round-trip tested against Kafka 3.8 in CI |
-| AWS infrastructure (Terraform: ECS Fargate, RDS, S3, EventBridge, Step Functions, Lambda) | Written; `fmt`, `validate` and `tflint` in CI; Lambda steps tested with moto; applying it needs an AWS account |
+| AWS infrastructure (Terraform: ECS Fargate, RDS, S3, EventBridge, Step Functions, Lambda) | Applied to AWS; `fmt`, `validate` and `tflint` in CI; Lambda steps tested with moto |
 | Helm chart | Implemented; linted, schema-validated, installed on kind and `helm test`-ed in CI |
 | Model-risk mapping (SR 11-7, NIST AI RMF) | `docs/model-risk.md` |
 | CI (GitHub Actions) | Five jobs (see Tests) |
